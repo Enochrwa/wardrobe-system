@@ -1,71 +1,53 @@
 import os
-import tempfile
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
+import pymysql
 
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-CA_CERT = os.getenv("CA_CERT")  # Full certificate content (multiline or \n)
+
+def create_mysql_database_if_not_exists():
+    """Create MySQL database if it doesn't exist"""
+    if DATABASE_URL and "mysql" in DATABASE_URL:
+        try:
+            db_name = DATABASE_URL.split("/")[-1]
+            base_url = DATABASE_URL.rsplit("/", 1)[0]
+            
+            temp_engine = create_engine(base_url)
+            with temp_engine.connect() as connection:
+                result = connection.execute(text(f"SHOW DATABASES LIKE '{db_name}'"))
+                if not result.fetchone():
+                    connection.execute(text(f"CREATE DATABASE {db_name}"))
+                    print(f"✅ Created database: {db_name}")
+                else:
+                    print(f"✅ Database {db_name} already exists")
+            temp_engine.dispose()
+        except Exception as e:
+            print(f"❌ Error creating database: {e}")
 
 def create_database_engine():
-    """Create database engine with proper SSL configuration for Aiven MySQL"""
-    
-    # Use SQLite for development if no DATABASE_URL is provided
     if not DATABASE_URL:
-        db_path = os.path.join(os.path.dirname(__file__), "..", "..", "digital_wardrobe.db")
-        database_url = f"sqlite:///{db_path}"
-        print(f"Using SQLite database: {database_url}")
-        
-        engine = create_engine(
-            database_url,
-            pool_pre_ping=True,
-            echo=False
-        )
-        return engine
+        raise ValueError("DATABASE_URL is not set in .env")
     
-    # Check if we need SSL configuration (for Aiven MySQL)
-    if CA_CERT and CA_CERT.strip():
-        # Write CA cert to a temporary file
-        ca_cert_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pem", mode='w')
-        ca_cert_file.write(CA_CERT.replace('\\n', '\n'))  # Handle escaped newlines
-        ca_cert_file.close()
-        
-        # Connect with SQLAlchemy using temp CA cert
-        connect_args = {
-            "ssl": {
-                "ca": ca_cert_file.name
-            }
-        }
-        
-        engine = create_engine(
-            DATABASE_URL,
-            connect_args=connect_args,
-            pool_pre_ping=True,
-            pool_recycle=3600,  # Recycle connections every hour
-            echo=False  # Set to True for SQL debugging
-        )
-    else:
-        # For local development or non-SSL connections
-        engine = create_engine(
-            DATABASE_URL,
-            pool_pre_ping=True,
-            pool_recycle=3600,
-            echo=False
-        )
-    
+    create_mysql_database_if_not_exists()
+
+    engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,
+        pool_recycle=3600,
+        echo=False
+    )
     return engine
 
-# Create the engine
 engine = create_database_engine()
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 def get_db():
-    """Dependency to get database session"""
     db = SessionLocal()
     try:
         yield db
@@ -73,13 +55,11 @@ def get_db():
         db.close()
 
 def test_database_connection():
-    """Test database connection"""
     try:
-        from sqlalchemy import text
         with engine.connect() as connection:
-            result = connection.execute(text("SELECT 1"))
+            connection.execute(text("SELECT 1"))
+            print("✅ Database connection successful")
             return True
     except Exception as e:
-        print(f"Database connection failed: {e}")
+        print(f"❌ Database connection failed: {e}")
         return False
-
