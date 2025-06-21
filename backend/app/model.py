@@ -53,6 +53,8 @@ class WardrobeItem(Base):
     color_palette = Column(JSON, nullable=True)  # Stores full color palette from ColorThief
     color_properties = Column(JSON, nullable=True)  # Stores color analysis (brightness, saturation, temperature)
     style_features = Column(JSON, nullable=True)  # Stores extracted style features for recommendations
+    color = Column(String(255), nullable=True) # Field for general color description
+    notes = Column(Text, nullable=True) # Field for user notes
     
     _tags = Column("tags", Text, nullable=True) # Store as JSON string
     favorite = Column(Boolean, default=False)
