@@ -4,10 +4,15 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
 import pymysql
-
+from ..model import *
+from .base import Base
+# Load environment variables
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Declare the Base
+
 
 def create_mysql_database_if_not_exists():
     """Create MySQL database if it doesn't exist"""
@@ -40,12 +45,20 @@ def create_database_engine():
         pool_recycle=3600,
         echo=False
     )
+
+    # Import all models before creating tables
+    try:
+        from app import models  # make sure models.User, etc., are defined here
+        Base.metadata.create_all(bind=engine)
+        print("✅ All tables created (if not already present)")
+    except Exception as e:
+        print(f"❌ Error creating tables: {e}")
+
     return engine
 
+# Create engine and session
 engine = create_database_engine()
-
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
 
 def get_db():
     db = SessionLocal()
@@ -63,3 +76,4 @@ def test_database_connection():
     except Exception as e:
         print(f"❌ Database connection failed: {e}")
         return False
+print(Base.metadata.tables.keys())

@@ -116,6 +116,23 @@ class WardrobeItemResponse(BaseModel):
     class Config:
         from_attributes = True
 
+# Schemas for "Find Matching Clothing Items" Feature (Objective ii)
+class FindMatchesForItemBodyRequest(BaseModel): # Renamed: target_item_id will come from path
+    num_suggestions: int = Field(5, ge=1, le=20, description="Number of matching suggestions to return.")
+    occasion: Optional[str] = Field(None, description="Optional: Filter matches for a specific occasion (e.g., 'casual', 'work').")
+    suggest_categories: Optional[List[str]] = Field(None, description="Optional: Specific categories of items to suggest as matches.")
+
+class SuggestedItemMatch(BaseModel):
+    item: WardrobeItemResponse # Use the existing detailed WardrobeItemResponse
+    match_score: float = Field(..., description="Overall compatibility score (0-1).")
+    match_type: str = Field(..., description="Type of match (e.g., 'color_coordinated', 'style_similar', 'category_complement').")
+    reason: Optional[str] = Field(None, description="Brief explanation of why this item is a good match.")
+
+class FindMatchesForItemResponse(BaseModel):
+    target_item: WardrobeItemResponse
+    suggested_matches: List[SuggestedItemMatch] = Field(..., description="List of suggested matching items.")
+    message: Optional[str] = Field(None, description="Additional information or summary.")
+
 class MLProcessingStatus(BaseModel):
     """Response schema for ML processing status."""
     status: str = Field(..., description="Processing status (success, failed, skipped)")

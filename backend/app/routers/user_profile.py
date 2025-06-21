@@ -2,18 +2,21 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import Optional
 from datetime import datetime
+import logging # Added logging
 
-from .. import tables as schemas  # schemas are in tables.py
-from .. import model as models    # SQLAlchemy models are in model.py
+from .. import tables as schemas
+from .. import model as models
 from ..security import get_current_user
 from ..db.database import get_db
 from ..services.ai_style_insights_service import (
-    get_user_style_profile,
+    get_user_style_profile, # This service reads UserStyleProfile (models.UserStyleProfile)
     get_wardrobe_analysis_details,
     generate_personalized_general_insights,
     generate_ai_style_outfit_recommendations
 )
-# FullAIStyleInsightsResponse is already available via schemas.FullAIStyleInsightsResponse
+from ..services import user_style_profile_service # Import the new service
+
+logger = logging.getLogger(__name__) # Added logger
 
 router = APIRouter(
     prefix="/profile",
@@ -26,9 +29,23 @@ async def read_user_profile(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
+    # This endpoint refers to models.UserProfile (the explicit user settings)
     profile = db.query(models.UserProfile).filter(models.UserProfile.user_id == current_user.id).first()
     if profile is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found for current user")
+        # Before raising, create a default UserProfile and UserStyleProfile if they don't exist
+        # This ensures that a user always has a profile, even if empty
+        try:
+            profile = models.UserProfile(user_id=current_user.id, updated_at=datetime.utcnow())
+            db.add(profile)
+            user_style_profile_service.get_or_create_user_style_profile(db, current_user.id) # Ensure UserStyleProfile also exists
+            db.commit()
+            db.refresh(profile)
+            logger.info(f"Created default UserProfile and UserStyleProfile for user_id: {current_user.id}")
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error creating default profile for user {current_user.id}: {e}")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not create default profile.")
+        # raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found for current user, created a default one.")
     return profile
 
 @router.post("/me", response_model=schemas.UserProfile, status_code=status.HTTP_201_CREATED)
@@ -37,6 +54,7 @@ async def create_user_profile(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
+    # This endpoint manages models.UserProfile
     existing_profile = db.query(models.UserProfile).filter(models.UserProfile.user_id == current_user.id).first()
     if existing_profile:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Profile already exists for this user. Use PUT to update.")
@@ -47,8 +65,17 @@ async def create_user_profile(
         updated_at=datetime.utcnow()
     )
     db.add(new_profile)
-    db.commit()
-    db.refresh(new_profile)
+    
+    try:
+        # Also ensure UserStyleProfile is created and synced
+        user_style_profile_service.sync_user_profile_to_style_profile(db, current_user.id)
+        db.commit()
+        db.refresh(new_profile)
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error creating profile or syncing UserStyleProfile for user {current_user.id}: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error saving profile information.")
+        
     return new_profile
 
 @router.put("/me", response_model=schemas.UserProfile)
@@ -57,34 +84,42 @@ async def update_user_profile(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
+    # This endpoint manages models.UserProfile
     db_profile = db.query(models.UserProfile).filter(models.UserProfile.user_id == current_user.id).first()
 
     if db_profile is None:
         # If profile doesn't exist, create it (idempotent PUT)
-        new_profile = models.UserProfile(
-            **profile_update_data.model_dump(exclude_unset=True), # include all fields from schema for creation
+        db_profile = models.UserProfile( # Assign to db_profile to be used later
+            **profile_update_data.model_dump(exclude_unset=True),
             user_id=current_user.id,
             updated_at=datetime.utcnow()
         )
-        db.add(new_profile)
-        db.commit()
-        db.refresh(new_profile)
-        return new_profile
+        db.add(db_profile)
     else:
         # Profile exists, update it
         update_data = profile_update_data.model_dump(exclude_unset=True)
         for key, value in update_data.items():
             setattr(db_profile, key, value)
         db_profile.updated_at = datetime.utcnow()
+        
+    try:
+        # Sync with UserStyleProfile (ML profile) after UserProfile changes
+        user_style_profile_service.sync_user_profile_to_style_profile(db, current_user.id)
         db.commit()
         db.refresh(db_profile)
-        return db_profile
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error updating profile or syncing UserStyleProfile for user {current_user.id}: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error saving profile information.")
+        
+    return db_profile
 
 @router.get("/me/style-insights", response_model=schemas.FullAIStyleInsightsResponse)
 async def get_full_style_insights(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
+    # This service reads from models.UserStyleProfile (the ML one)
     """
     Retrieves comprehensive AI-driven style insights for the current user.
     This includes their style profile, wardrobe analysis, personalized tips,

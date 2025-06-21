@@ -43,7 +43,10 @@ async def get_recommendations_for_event(
     current_user: models.User = Depends(get_current_user) # Ensure this is models.User for service compatibility
 ):
     """
-    Provides outfit recommendations based on event details.
+    Provides outfit recommendations based on event details, user's wardrobe, and learned style preferences.
+
+    The system uses AI to understand the occasion context and matches it with suitable outfits,
+    prioritizing those that align with the user's personal style profile for that type of event.
     """
 
     # The recommend_outfits_for_occasion_service expects an object with 'name' and 'notes' attributes.

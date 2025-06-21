@@ -2,11 +2,15 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from typing import List
 from datetime import datetime
 from sqlalchemy.orm import Session, joinedload
+import logging # Added logging
 
 from .. import tables as schemas
 from .. import model as models
-from ..security import get_current_user # get_current_user returns schemas.User
+from ..security import get_current_user
 from ..db.database import get_db
+from ..services import user_style_profile_service # Import the new service
+
+logger = logging.getLogger(__name__) # Added logger
 
 router = APIRouter(
     prefix="/style-history",
@@ -53,8 +57,31 @@ async def log_style_history_entry(
     )
 
     db.add(db_entry)
-    db.commit()
-    db.refresh(db_entry)
+    
+    try:
+        db.commit()
+        db.refresh(db_entry)
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error saving StyleHistory entry for user {current_user.id}: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not save style history.")
+
+    # After successfully logging the history, update the style profile
+    if db_entry.outfit_id: # Only update if it's an outfit history
+        try:
+            user_style_profile_service.update_style_profile_from_outfit_history(
+                db=db,
+                user_id=current_user.id,
+                outfit_id=db_entry.outfit_id,
+                style_history_entry=db_entry 
+            )
+            db.commit() # Commit UserStyleProfile changes
+        except Exception as e:
+            db.rollback() # Rollback UserStyleProfile changes only
+            logger.error(f"Error updating style profile from outfit history for user {current_user.id}, outfit {db_entry.outfit_id}: {e}")
+            # Do not raise HTTPException here, as the primary operation (logging history) was successful.
+            # This failure is secondary.
+
     return db_entry
 
 

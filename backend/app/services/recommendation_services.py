@@ -19,12 +19,14 @@ try:
     from sklearn.metrics.pairwise import cosine_similarity
     sentence_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
 except ImportError:
-    import logging # Import here if not at top level already
+    import logging 
     logger = logging.getLogger(__name__)
     logger.warning("sentence_transformers not available. Occasion matching will use fallback logic.")
     sentence_model = None
     cosine_similarity = None
 
+import json # For parsing UserStyleProfile JSON fields
+from .user_style_profile_service import get_or_create_user_style_profile # Import for UserStyleProfile
 
 # --- Load Models ---
 # Models are loaded in the import section above
@@ -32,22 +34,24 @@ except ImportError:
 # Instantiate services needed
 outfit_matcher = OutfitMatchingService()
 
-from .weather_service import get_weather_data # For weather-based recommendations
-import asyncio # For running async weather_service call if needed, or make the main function async
+from .weather_service import get_weather_data 
+import asyncio 
 
-# Helper function to find matching outfits based on simple criteria (OLD - to be replaced)
 # New AI-driven helper function for occasion matching
 def find_ai_matched_outfits_for_occasion(
     db: Session,
     user_id: int,
-    occasion_text: str, # Combined occasion name and notes
+    occasion_name_from_input: str, # Specifically the name/type of occasion from user input
+    occasion_notes_from_input: str, # Additional notes for context
     num_recommendations: int = 3,
-    min_coherence_score: float = 0.4 # Minimum internal coherence for an outfit to be considered
+    min_coherence_score: float = 0.4 
 ) -> List[models.Outfit]:
-    logger = logging.getLogger(__name__) # Ensure logger is available
+    logger = logging.getLogger(__name__) 
 
-    if not sentence_model:
-        logger.warning("Sentence transformer model not loaded. Cannot perform AI matching.")
+    occasion_text_for_embedding = f"{occasion_name_from_input} {occasion_notes_from_input}".strip()
+
+    if not sentence_model or not occasion_text_for_embedding:
+        logger.warning("Sentence transformer model not loaded or occasion text is empty. Cannot perform AI matching.")
         return []
 
     try:
@@ -61,108 +65,129 @@ def find_ai_matched_outfits_for_occasion(
     # and 'item' is the relationship from OutfitItem to WardrobeItem.
     user_outfits = db.query(models.Outfit)\
         .filter(models.Outfit.user_id == user_id)\
-        .options(joinedload(models.Outfit.items_association).joinedload(models.OutfitItem.item))\
-        .all()
+        .options(joinedload(models.Outfit.items))\
+        .all() # Changed from items_association to items directly
 
     if not user_outfits:
         return []
 
+    # Fetch UserStyleProfile
+    user_style_profile = get_or_create_user_style_profile(db, user_id)
+    profile_preferred_colors = json.loads(user_style_profile.preferred_colors) if user_style_profile.preferred_colors else []
+    profile_style_keywords = json.loads(user_style_profile.style_keywords) if user_style_profile.style_keywords else []
+    profile_occasion_prefs = json.loads(user_style_profile.occasion_preferences) if user_style_profile.occasion_preferences else {}
+    
+    # Get occasion-specific preferences from UserStyleProfile
+    current_occasion_specific_prefs = profile_occasion_prefs.get(occasion_name_from_input.lower(), {})
+    occasion_preferred_colors = current_occasion_specific_prefs.get("colors", [])
+    occasion_preferred_styles = current_occasion_specific_prefs.get("styles", [])
+
+
     scored_outfits = []
 
     for outfit in user_outfits:
-        if not outfit.items_association: # Skip outfits with no items
+        if not outfit.items: # Skip outfits with no items
             continue
 
         outfit_item_features_for_matcher: List[Dict[str, Any]] = []
         item_embeddings_for_outfit_avg: List[np.ndarray] = []
+        
+        outfit_aggregated_colors: set[str] = set()
+        outfit_aggregated_styles: set[str] = set() # From item.style_features.identified_styles
 
-        for assoc_obj in outfit.items_association:
-            item = assoc_obj.item # This is the WardrobeItem model
+        for item in outfit.items: # Iterate through WardrobeItem directly
             if not item: continue
 
-            # Use actual AI embedding if available, otherwise mock (embedding dim for all-MiniLM-L6-v2 is 384)
-            item_emb_list = item.ai_embedding
-            if item_emb_list is None:
-                item_emb_list = np.random.rand(384).tolist()
+            item_emb_list = item.ai_embedding if item.ai_embedding else np.random.rand(384).tolist()
+            item_colors_hex = item.color_palette[0]["hex"] if item.color_palette and isinstance(item.color_palette, list) and item.color_palette[0].get("hex") else (item.dominant_color_hex if item.dominant_color_hex else "#808080")
+            
+            # For OutfitMatchingService, it expects a list of hex colors per item.
+            # For simplicity, let's use the dominant hex or first from palette.
+            # The OutfitMatchingService's check_color_harmony takes a flat list of all colors in the outfit.
+            # So, we'll collect all dominant_color_name for preference check, and all hex for harmony.
+            
+            if item.dominant_color_name:
+                outfit_aggregated_colors.add(item.dominant_color_name.lower())
 
-            # Use actual AI dominant colors if available, otherwise mock
-            item_colors = item.ai_dominant_colors
-            if item_colors is None:
-                item_colors = random.sample(["#1A1A1A", "#FFFFFF", "#FF0000", "#00FF00", "#0000FF"], k=min(2, len(["#1A1A1A", "#FFFFFF", "#FF0000", "#00FF00", "#0000FF"])))
-
-
-            item_category = getattr(item, "category", None)
-            if item_category is None:
-                item_category = random.choice(["Tops", "Bottoms", "Shoes", "Accessories"])
+            if item.style_features and isinstance(item.style_features.get("identified_styles"), list):
+                for style in item.style_features["identified_styles"]:
+                    outfit_aggregated_styles.add(style.lower())
 
             outfit_item_features_for_matcher.append({
                 "id": item.id,
                 "name": item.name,
-                "embedding": item_emb_list, # Used by outfit_matcher
-                "colors": item_colors,    # Used by outfit_matcher
-                "category": item_category # Used by outfit_matcher (potentially)
+                "embedding": item_emb_list,
+                "colors": [item_colors_hex], # Pass as list of hex strings
+                "category": item.category or "unknown"
             })
             item_embeddings_for_outfit_avg.append(np.array(item_emb_list))
 
         if not outfit_item_features_for_matcher or not item_embeddings_for_outfit_avg:
-            continue # Not enough item data to process this outfit
+            continue
 
-        # 1. Calculate Outfit Coherence
         coherence_details = outfit_matcher.calculate_compatibility_score(outfit_item_features_for_matcher)
         internal_coherence_score = coherence_details["score"]
 
         if internal_coherence_score < min_coherence_score:
-            continue # Skip outfits that are not internally coherent
+            continue
 
-        # 2. Create Outfit Embedding (average of item embeddings)
         outfit_embedding_avg = np.mean(item_embeddings_for_outfit_avg, axis=0)
-
-        # 3. Calculate Match Score (Similarity to Occasion + Internal Coherence)
         similarity_to_occasion = cosine_similarity(occasion_embedding.reshape(1, -1), outfit_embedding_avg.reshape(1, -1))[0][0]
-        # Normalize cosine similarity from [-1, 1] to [0, 1] for scoring
         similarity_to_occasion_normalized = (similarity_to_occasion + 1) / 2
 
-        # Weighted score
-        occasion_similarity_weight = 0.7
-        coherence_weight = 0.3
+        # Calculate preference boost
+        preference_boost = 0.0
+        # General color preference
+        if any(color in profile_preferred_colors for color in outfit_aggregated_colors):
+            preference_boost += 0.05
+        # General style preference
+        if any(style in profile_style_keywords for style in outfit_aggregated_styles):
+            preference_boost += 0.05
+        
+        # Occasion-specific color preference
+        if occasion_preferred_colors and any(color in occasion_preferred_colors for color in outfit_aggregated_colors):
+            preference_boost += 0.10 # Higher boost for occasion-specific match
+        # Occasion-specific style preference
+        if occasion_preferred_styles and any(style in occasion_preferred_styles for style in outfit_aggregated_styles):
+            preference_boost += 0.10
+
+        # Weights for combining scores
+        occasion_similarity_weight = 0.6
+        coherence_weight = 0.25
+        preference_weight = 0.15 # Weight for user preference boost
+        
         final_match_score = (occasion_similarity_weight * similarity_to_occasion_normalized) + \
-                            (coherence_weight * internal_coherence_score)
+                            (coherence_weight * internal_coherence_score) + \
+                            (preference_weight * min(preference_boost, 1.0)) # Cap boost
 
         scored_outfits.append({
-            "outfit_model": outfit, # Keep the SQLAlchemy model
+            "outfit_model": outfit,
             "score": final_match_score,
             "debug_occasion_sim": similarity_to_occasion_normalized,
-            "debug_coherence": internal_coherence_score
+            "debug_coherence": internal_coherence_score,
+            "debug_pref_boost": preference_boost
         })
 
-    # Sort outfits by the final match score
-    # Adding a secondary sort by coherence in case of tie in final_match_score, or just to favor more coherent ones slightly
-    sorted_outfits = sorted(scored_outfits, key=lambda x: (x["score"], x["debug_coherence"]), reverse=True)
-
-    # logger.debug(f"Sorted Outfits: {[ (s['outfit_model'].name, s['score'], s['debug_occasion_sim'],s['debug_coherence']) for s in sorted_outfits[:5]]}")
-
+    sorted_outfits = sorted(scored_outfits, key=lambda x: x["score"], reverse=True)
+    # logger.info(f"Top sorted outfits for occasion '{occasion_name_from_input}': " + ", ".join([f"{s['outfit_model'].name} (Score: {s['score']:.2f}, PrefBoost: {s['debug_pref_boost']:.2f})" for s in sorted_outfits[:5]]))
 
     return [s["outfit_model"] for s in sorted_outfits[:num_recommendations]]
 
 
 async def recommend_outfits_for_occasion_service(
     db: Session,
-    user: schemas.User, # User for whom recommendations are being made
-    occasion: schemas.Occasion, # The occasion details
+    user: schemas.User, 
+    occasion: schemas.Occasion, # This is the TempOccasionContext from the router
     num_recommendations: int = 3
-) -> List[schemas.Outfit]: # Return a list of Outfit schemas
+) -> List[schemas.Outfit]: 
 
-    occasion_text = f"{occasion.name} {occasion.notes if occasion.notes else ''}".strip()
-    if not occasion_text: # Handle empty occasion details
-        # Fallback: maybe return most coherent or recently created outfits?
-        # For now, return empty if no text to match.
-        return []
-
-    # Use the new AI-driven helper
+    # Use occasion.name (event_type from input) and occasion.notes (combined details)
+    # find_ai_matched_outfits_for_occasion expects occasion_name and occasion_notes separately
     db_outfits = find_ai_matched_outfits_for_occasion(
         db=db,
         user_id=user.id,
-        occasion_text=occasion_text,
+        occasion_name_from_input=occasion.name, 
+        occasion_notes_from_input=occasion.notes if occasion.notes else "",
         num_recommendations=num_recommendations
     )
 

@@ -4,7 +4,7 @@ from sqlalchemy.orm import relationship, sessionmaker
 from datetime import datetime
 #import json # SQLAlchemy's JSON type handles serialization
 import json
-from .db.database import Base # Import Base from the new database.py
+from .db.base import Base # Import Base from the new database.py
 
 # Association table for Outfit and WardrobeItem (many-to-many)
 outfit_item_association = Table('outfit_item_association', Base.metadata,
@@ -243,7 +243,7 @@ class ItemClassification(Base):
 class UserStyleProfile(Base):
     __tablename__ = "user_style_profiles"
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True, index=True) # Ensured user_id is unique and indexed
     style_vector = Column(JSON, nullable=True)  # Learned style feature vector
     preferred_colors = Column(JSON, nullable=True)  # Learned color preferences
     preferred_categories = Column(JSON, nullable=True)  # Preferred clothing categories

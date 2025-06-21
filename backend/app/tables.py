@@ -1,4 +1,4 @@
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, model_validator, Field
 from datetime import datetime, date
 from typing import List, Optional, Dict
 
@@ -15,7 +15,7 @@ class User(BaseModel):
     updated_at: datetime
 
     class Config:
-        from_attributes = True # For Pydantic v2
+        from_attributes = True 
 
 class UserCreate(BaseModel):
     username: str
@@ -30,12 +30,12 @@ class Token(BaseModel):
         from_attributes = True
 
 class EventDetailsInput(BaseModel):
-    event_type: str
-    location: Optional[str] = None
-    weather: Optional[str] = None # e.g., "hot", "mild", "cold"
-    time_of_day: Optional[str] = None # e.g., "morning", "evening"
-    formality: Optional[str] = None # e.g., "casual", "smart_casual", "formal"
-    notes: Optional[str] = None # To capture any extra details from user input
+    event_type: str = Field(..., description="Type or name of the event (e.g., 'Wedding Guest', 'Casual Brunch', 'Work Meeting'). This is the primary input for matching.")
+    location: Optional[str] = Field(None, description="General location of the event (e.g., 'outdoor', 'office', 'restaurant').")
+    weather: Optional[str] = Field(None, description="Expected weather conditions (e.g., 'hot', 'mild', 'cold', 'rainy').")
+    time_of_day: Optional[str] = Field(None, description="Time of the event (e.g., 'morning', 'afternoon', 'evening', 'night').")
+    formality: Optional[str] = Field(None, description="Formality level of the event (e.g., 'casual', 'smart_casual', 'business_casual', 'semi-formal', 'formal', 'black_tie').")
+    notes: Optional[str] = Field(None, description="Any additional notes or keywords describing the event context or user's specific needs for the outfit.")
 
     class Config:
         from_attributes = True
