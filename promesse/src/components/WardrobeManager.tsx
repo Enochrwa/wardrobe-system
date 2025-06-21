@@ -54,6 +54,7 @@ export interface WardrobeItemCreate {
   tags: string[];
   color?: string;
   notes?: string;
+  favorite?: boolean; // Added for consistency with backend and apiClient
 }
 
 

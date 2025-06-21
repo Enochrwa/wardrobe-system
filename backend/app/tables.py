@@ -77,6 +77,9 @@ class WardrobeItemCreate(BaseModel):
     season: Optional[str] = None
     image_url: Optional[str] = None
     tags: Optional[List[str]] = None
+    color: Optional[str] = None
+    notes: Optional[str] = None
+    favorite: Optional[bool] = False # Default to False
 
 class WardrobeItemUpdate(BaseModel):
     name: Optional[str] = None

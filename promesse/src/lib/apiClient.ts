@@ -69,12 +69,27 @@ export interface WardrobeItemData {
 }
 
 // CRUD for wardrobe items
-export const addItem = (itemData: WardrobeItemData, imageFile?: File) => {
-  const form = new FormData();
-  form.append('item', new Blob([JSON.stringify(itemData)], { type: 'application/json' }));
-  if (imageFile) form.append('image', imageFile);
-  return apiClient('/wardrobe/items/', { method: 'POST', body: form });
+
+
+export const addItem = async (
+  itemData: Omit<WardrobeItemData, 'image_url'>,
+  imageFile?: File
+) => {
+  const formData = new FormData();
+  formData.append("item", JSON.stringify(itemData)); // ✅ FastAPI expects item as string
+
+  if (imageFile) {
+    formData.append("image", imageFile);
+  }
+
+  // Use apiClient helper — DO NOT set Content-Type, FormData will handle it
+  return await apiClient("/wardrobe/items/", {
+    method: "POST",
+    body: formData,
+  });
 };
+
+
 
 export const updateItem = (itemId: string, itemData: WardrobeItemData, imageFile?: File) => {
   const form = new FormData();

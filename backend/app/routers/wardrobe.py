@@ -1,5 +1,6 @@
-from fastapi import APIRouter,Path, Depends, HTTPException, status, File, UploadFile
+from fastapi import APIRouter,Path, Depends, HTTPException, status, File, UploadFile, Form
 from typing import List, Optional, Dict, Any
+import json # For parsing the item JSON string
 from datetime import datetime
 import shutil
 import uuid
@@ -85,18 +86,28 @@ def extract_textual_style_features(name: Optional[str], category: Optional[str],
 
 @router.post("/items/", response_model=schemas.WardrobeItem, status_code=status.HTTP_201_CREATED)
 async def create_wardrobe_item(
-    item: schemas.WardrobeItemCreate = Depends(),
+    item_str: str = Form(..., alias="item"), # Expect 'item' as a string from FormData
     image: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
     current_user: schemas.User = Depends(get_current_user)
 ):
-    item_data = item.model_dump()
+    try:
+        item_data_dict = json.loads(item_str)
+        item = schemas.WardrobeItemCreate(**item_data_dict)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON format for item data.")
+    except Exception as e: # PydanticValidationError will be caught here
+        # You can log e for more details if needed
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Validation error for item data: {e}")
+
+    item_data = item.model_dump() # Now includes color, notes, and favorite (with default)
     
-    # Initialize all AI and color fields to None or default
+    # Initialize AI-related fields, others come from item_data
     item_data.update({
         'ai_embedding': None, 'ai_dominant_colors': None, 'dominant_color_rgb': None,
         'dominant_color_hex': None, 'dominant_color_name': None, 'color_palette': None,
         'color_properties': None, 'ai_classification': None, 'style_features': None
+        # favorite, color, notes are now part of item_data from WardrobeItemCreate
     })
 
     if image and image.filename:
@@ -171,29 +182,30 @@ async def create_wardrobe_item(
         finally:
             image.file.close()
             
-    elif item.image_url:
-        item_data['image_url'] = item.image_url
+    elif item_data.get('image_url'): # Check from the parsed item_data
+        pass # image_url is already in item_data if provided and no new image
     else:
         item_data['image_url'] = None
 
     # 4. Style Features (Textual) - This is done regardless of image, based on item_data
     try:
         item_data['style_features'] = extract_textual_style_features(
-            item_data.get('name'), 
-            item_data.get('category'), 
+            item_data.get('name'),
+            item_data.get('category'),
             item_data.get('tags')
         )
     except Exception as e:
         logger.error(f"Error extracting textual style features: {e}")
 
+    # Fields like 'color' and 'notes' are now part of item_data if provided in item_str
+    # 'favorite' is also explicitly handled and defaults to False if not in item_str
 
     db_item = models.WardrobeItem(
-        **item_data,
         user_id=current_user.id,
         date_added=datetime.utcnow(),
         updated_at=datetime.utcnow(),
         times_worn=0,
-        favorite=item_data.get('favorite', False)
+        **item_data # Spread all validated and processed data
     )
     
     db.add(db_item)
