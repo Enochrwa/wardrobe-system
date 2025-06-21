@@ -140,8 +140,14 @@ class ModelManager:
             config = self.model_configs[model_name]
             
             if model_name == "mobilenet_v2":
+                # Load KerasLayer from TF Hub
                 keras_layer = hub.KerasLayer(config["url"], trainable=False)
-                # Use functional API — this avoids the Sequential issue
+
+                # ✅ Force-cast as a tf.keras.layers.Layer
+                if not isinstance(keras_layer, tf.keras.layers.Layer):
+                    raise TypeError(f"Downloaded module is not a valid Keras Layer: {type(keras_layer)}")
+
+                # ✅ Use Functional API instead of Sequential
                 inputs = tf.keras.Input(shape=config["input_shape"])
                 outputs = keras_layer(inputs)
                 model = tf.keras.Model(inputs=inputs, outputs=outputs)
