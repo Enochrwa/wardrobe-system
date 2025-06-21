@@ -18,7 +18,7 @@ class ModelManager:
     Centralized model management with persistent caching and version control
     """
     
-    def __init__(self, cache_dir: str = "/tmp/wardrobe_models"):
+    def __init__(self, cache_dir: str = "tmp/wardrobe_models"):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.models_cache = {}
@@ -140,7 +140,11 @@ class ModelManager:
             config = self.model_configs[model_name]
             
             if model_name == "mobilenet_v2":
-                model = hub.KerasLayer(config["url"], input_shape=config["input_shape"])
+                keras_layer = hub.KerasLayer(config["url"], trainable=False)
+                # Use functional API — this avoids the Sequential issue
+                inputs = tf.keras.Input(shape=config["input_shape"])
+                outputs = keras_layer(inputs)
+                model = tf.keras.Model(inputs=inputs, outputs=outputs)
             else:
                 model = hub.load(config["url"])
             

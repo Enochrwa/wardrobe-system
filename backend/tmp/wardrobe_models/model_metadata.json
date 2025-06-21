@@ -1,0 +1,8 @@
+{
+  "efficientdet_lite0": {
+    "version": "1.0",
+    "cached_date": "2025-06-21T11:39:30.853779",
+    "cache_path": "tmp\\wardrobe_models\\efficientdet_lite0_cached",
+    "url": "https://tfhub.dev/tensorflow/efficientdet/lite0/detection/1"
+  }
+}
