@@ -42,10 +42,12 @@ const Header = () => {
   ];
 
   const aiStudioFeatures = [
-    { name: 'Outfit Analyzer', href: '/ai-studio/analyzer', description: 'AI analysis of your outfit photos', icon: Eye },
-    { name: 'Event Stylist', href: '/ai-studio/event-recommender', description: 'Get outfit recommendations for events', icon: Wand2 },
+    { name: 'Intelligent Matching', href: '/ai-studio/intelligent-matching', description: 'AI-powered clothing combinations', icon: Sparkles },
+    { name: 'Advanced Search', href: '/ai-studio/advanced-search', description: 'Smart search with intelligent filters', icon: Eye },
+    { name: 'Occasion Recommendations', href: '/ai-studio/occasion-recommendations', description: 'Weather-aware outfit suggestions', icon: Calendar },
     { name: 'Style Insights', href: '/ai-studio/insights', description: 'AI-powered style intelligence', icon: Brain },
-    { name: 'Trend Forecasting', href: '/ai-studio/trends', description: 'Discover upcoming fashion trends', icon: Sparkles },
+    { name: 'Trend Forecasting', href: '/ai-studio/trends', description: 'Discover upcoming fashion trends', icon: Wand2 },
+    { name: 'Outfit Analyzer', href: '/ai-studio/analyzer', description: 'AI analysis of your outfit photos', icon: BarChart3 },
   ];
 
   const communityFeatures = [

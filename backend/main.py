@@ -23,6 +23,8 @@ from app.routers import (
     community,
     model_cache,  # Added model cache router
     ml_features,  # Added ML features router
+    enhanced_search,  # Added enhanced search router
+    occasion_recommendations,  # Added occasion recommendations router
 )
 
 # Disable oneDNN optimizations if desired
@@ -103,6 +105,8 @@ app.include_router(user_profile.router, prefix="/api")
 app.include_router(community.router, prefix="/api")
 app.include_router(model_cache.router, prefix="/api")  # Added model cache router
 app.include_router(ml_features.router, prefix="/api")  # Added ML features router
+app.include_router(enhanced_search.router, prefix="/api")  # Added enhanced search router
+app.include_router(occasion_recommendations.router, prefix="/api")  # Added occasion recommendations router
 
 @app.get("/")
 async def root():
