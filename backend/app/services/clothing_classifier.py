@@ -16,7 +16,7 @@ import io
 import logging
 from typing import Dict, List, Tuple, Optional
 import json
-
+import asyncio
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -269,29 +269,52 @@ class ClothingClassifier:
 
 # Global classifier instance
 _classifier_instance = None
+_classifier_lock = asyncio.Lock() # Lock for async instance creation
 
-def get_clothing_classifier() -> ClothingClassifier:
+async def get_clothing_classifier_async() -> ClothingClassifier:
     """
-    Get or create the global clothing classifier instance.
-    
-    Returns:
-        ClothingClassifier instance
+    Asynchronously get or create the global clothing classifier instance.
+    Ensures model loading happens in a thread-safe manner for async contexts.
     """
     global _classifier_instance
     if _classifier_instance is None:
+        async with _classifier_lock:
+            if _classifier_instance is None: # Double check after acquiring lock
+                # Model loading can be I/O bound (disk) or CPU bound (TF init)
+                # Offload the instantiation if ClothingClassifier._load_model is heavy
+                _classifier_instance = await asyncio.to_thread(ClothingClassifier)
+    return _classifier_instance
+
+def get_clothing_classifier() -> ClothingClassifier:
+    """
+    Get or create the global clothing classifier instance (synchronous).
+    Note: If called after async initialization, it will return the same instance.
+    If called first in a purely synchronous environment, it initializes synchronously.
+    It's generally recommended to initialize such heavy objects at application startup.
+    """
+    global _classifier_instance
+    if _classifier_instance is None:
+        # This direct instantiation might block if called in an async event loop
+        # without prior async initialization.
         _classifier_instance = ClothingClassifier()
     return _classifier_instance
 
+async def classify_clothing_image_async(image_data: bytes) -> Dict[str, any]:
+    """
+    Asynchronously classify a clothing image.
+    Offloads synchronous TensorFlow operations to a thread pool.
+    """
+    classifier = await get_clothing_classifier_async()
+    # The actual prediction is CPU-bound
+    return await asyncio.to_thread(classifier.classify_clothing_item, image_data)
+
 def classify_clothing_image(image_data: bytes) -> Dict[str, any]:
     """
-    Convenience function to classify a clothing image.
-    
-    Args:
-        image_data: Raw image bytes
-        
-    Returns:
-        Classification results dictionary
+    Convenience function to classify a clothing image (synchronous).
     """
     classifier = get_clothing_classifier()
     return classifier.classify_clothing_item(image_data)
+
+# Need to import asyncio at the top of the file
+
 

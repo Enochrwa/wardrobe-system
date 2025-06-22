@@ -122,18 +122,45 @@ const WardrobeManager = () => {
   const handleSaveItem = async (newItemData: Omit<WardrobeItemCreate, 'image_url'>, imageFile?: File) => {
     if (!token) {
       toast({ title: "Authentication Error", description: "You must be logged in to add items.", variant: "destructive" });
+      console.error("[WardrobeManager.handleSaveItem] Auth token missing.");
       return;
     }
+    console.log("[WardrobeManager.handleSaveItem] Attempting to save item. Data:", newItemData, "Image file:", imageFile?.name);
     try {
       // Use the new addItem function from apiClient which handles FormData
       const savedItem = await addItem(newItemData, imageFile);
+      console.log("[WardrobeManager.handleSaveItem] Item saved successfully by API. Response:", savedItem);
 
       fetchItems(); // Re-fetch to get the latest list
       setIsAddModalOpen(false);
       toast({ title: "Success", description: `${savedItem.name} added to your wardrobe.` });
     } catch (err: any) {
-      console.error("Failed to save item:", err);
-      toast({ title: "Error", description: err.message || "Could not save item.", variant: "destructive" });
+      console.error("[WardrobeManager.handleSaveItem] Failed to save item. Raw error object:", err);
+      let errorMessage = "Could not save item. Please try again.";
+      if (err.message) {
+        errorMessage = err.message;
+      }
+      // Attempt to get more specific error details if it's an API error
+      // This depends on how apiClient structures errors. Assuming it might have a 'detail' or 'data' field from the generic client.
+      // The generic apiClient throws an error where error.message is already populated with detail or statusText.
+      // So, err.message should be prioritized.
+      
+      // If err.message is generic like "Failed to fetch", check if the error object itself has more details.
+      // This is heuristic, actual structure depends on how fetch errors are wrapped by apiClient or browser.
+      if (err.message === "Failed to fetch" && err.cause) { // Standard way to check for underlying cause in modern fetch
+        errorMessage = `Network error or server unreachable: ${err.cause}`;
+      } else if (err.detail) { // Custom detail field, as seen in FastAPI
+        errorMessage = err.detail;
+      } else if (err.response && err.response.data && err.response.data.detail) { // Axios-like error structure
+        errorMessage = err.response.data.detail;
+      }
+      // Ensure err.message itself is used if it's more specific than the default.
+      // The initial `if (err.message)` already covers this. The toast will use `err.message` if available.
+
+      console.error("[WardrobeManager.handleSaveItem] Displaying error to user:", errorMessage);
+      // The existing toast already uses err.message, which should be good if apiClient populates it well.
+      // Let's ensure the toast uses the potentially more detailed errorMessage we constructed.
+      toast({ title: "Error Saving Item", description: errorMessage, variant: "destructive" });
     }
   };
 
@@ -203,19 +230,43 @@ const WardrobeManager = () => {
   const handleCreateOutfit = async (outfitData: OutfitCreate) => {
     if (!token) {
       toast({ title: "Authentication Error", description: "You must be logged in to create outfits.", variant: "destructive" });
+      console.error("[WardrobeManager.handleCreateOutfit] Auth token missing.");
       return;
     }
+
+    // Ensure item_ids are numbers, as backend expects List[int]
+    // Assuming outfitData.item_ids might be string[] from the modal
+    const processedOutfitData = {
+      ...outfitData,
+      item_ids: outfitData.item_ids.map(id => parseInt(id, 10)).filter(id => !isNaN(id)),
+    };
+    console.log("[WardrobeManager.handleCreateOutfit] Original outfitData:", outfitData);
+    console.log("[WardrobeManager.handleCreateOutfit] Processed outfitData for API:", processedOutfitData);
+
+
     try {
       const newOutfit = await apiClient('/outfits/', {
         method: 'POST',
-        body: outfitData,
+        body: processedOutfitData, // Send the processed data
       });
+      console.log("[WardrobeManager.handleCreateOutfit] Outfit created successfully by API. Response:", newOutfit);
       toast({ title: "Success", description: `Outfit "${newOutfit.name}" created successfully.` });
       setIsCreateOutfitOpen(false);
       // Optionally, if OutfitOrganizer is also managed here or needs refresh:
       // fetchOutfits(); // Assuming fetchOutfits exists if WardrobeManager also lists outfits
     } catch (err: any) {
-      toast({ title: "Error", description: err.message || "Could not create outfit.", variant: "destructive" });
+      console.error("[WardrobeManager.handleCreateOutfit] Failed to create outfit. Raw error object:", err);
+      let errorMessage = "Could not create outfit. Please try again.";
+      if (err.message) {
+        errorMessage = err.message;
+      }
+      if (err.detail) {
+        errorMessage = err.detail;
+      } else if (err.data && err.data.detail) {
+        errorMessage = err.data.detail;
+      }
+      console.error("[WardrobeManager.handleCreateOutfit] Displaying error to user:", errorMessage);
+      toast({ title: "Error Creating Outfit", description: errorMessage, variant: "destructive" });
     }
   };
 

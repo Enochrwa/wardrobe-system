@@ -12,7 +12,7 @@ from colorthief import ColorThief
 from PIL import Image
 import webcolors
 import numpy as np
-
+import asyncio
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -461,43 +461,59 @@ class ColorDetector:
 
 # Global color detector instance
 _color_detector_instance = None
+_color_detector_lock = asyncio.Lock() # For async instance creation
+
+async def get_color_detector_async() -> ColorDetector:
+    """
+    Asynchronously get or create the global ColorDetector instance.
+    """
+    global _color_detector_instance
+    if _color_detector_instance is None:
+        async with _color_detector_lock:
+            if _color_detector_instance is None: # Double check
+                # ColorDetector init is lightweight, but for consistency:
+                _color_detector_instance = await asyncio.to_thread(ColorDetector)
+    return _color_detector_instance
 
 def get_color_detector() -> ColorDetector:
     """
-    Get or create the global color detector instance.
-    
-    Returns:
-        ColorDetector instance
+    Get or create the global color detector instance (synchronous).
     """
     global _color_detector_instance
     if _color_detector_instance is None:
         _color_detector_instance = ColorDetector()
     return _color_detector_instance
 
-def detect_dominant_color(image_data: bytes) -> Dict[str, any]:
+async def detect_dominant_color_async(image_data: bytes, quality: int = 1) -> Dict[str, any]:
     """
-    Convenience function to detect dominant color from image.
-    
-    Args:
-        image_data: Raw image bytes
-        
-    Returns:
-        Dominant color information dictionary
+    Asynchronously detect dominant color from image.
+    Offloads ColorThief operations to a thread pool.
     """
-    detector = get_color_detector()
-    return detector.extract_dominant_color(image_data)
+    detector = await get_color_detector_async()
+    return await asyncio.to_thread(detector.extract_dominant_color, image_data, quality)
 
-def extract_color_palette(image_data: bytes, color_count: int = 5) -> Dict[str, any]:
+def detect_dominant_color(image_data: bytes, quality: int = 1) -> Dict[str, any]:
     """
-    Convenience function to extract color palette from image.
-    
-    Args:
-        image_data: Raw image bytes
-        color_count: Number of colors to extract
-        
-    Returns:
-        Color palette information dictionary
+    Convenience function to detect dominant color from image (synchronous).
     """
     detector = get_color_detector()
-    return detector.extract_color_palette(image_data, color_count)
+    return detector.extract_dominant_color(image_data, quality)
+
+async def extract_color_palette_async(image_data: bytes, color_count: int = 5, quality: int = 1) -> Dict[str, any]:
+    """
+    Asynchronously extract color palette from image.
+    Offloads ColorThief operations to a thread pool.
+    """
+    detector = await get_color_detector_async()
+    return await asyncio.to_thread(detector.extract_color_palette, image_data, color_count, quality)
+
+def extract_color_palette(image_data: bytes, color_count: int = 5, quality: int = 1) -> Dict[str, any]:
+    """
+    Convenience function to extract color palette from image (synchronous).
+    """
+    detector = get_color_detector()
+    return detector.extract_color_palette(image_data, color_count, quality)
+
+# Need to import asyncio at the top of the file
+# import asyncio
 

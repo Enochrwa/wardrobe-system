@@ -102,34 +102,36 @@ export default {
 					purple: '#9333ea', // Replaced gold with purple
 					'purple-light': '#a855f7', // Lighter purple
 					'purple-dark': '#7c3aed', // Darker purple
-					cream: '#faf7f2',
-					'cream-warm': '#fcf9f4',
-					'cream-cool': '#f8f5f0',
+					'off-white': '#F9FAFB', // New off-white, replacing cream and pearl
+					cream: '#F9FAFB', // Was #faf7f2, changed to owis.off-white
+					'cream-warm': '#fcf9f4', // Keeping as is, seems distinct enough from gray
+					'cream-cool': '#f8f5f0', // Keeping as is, seems distinct enough from gray
 					emerald: '#50C878', // Replaced sage with emerald
 					'emerald-light': '#5FD38F', // Lighter emerald
 					'emerald-dark': '#40B060', // Darker emerald
-					charcoal: '#2d3748',
-					'charcoal-light': '#3d4758',
-					'charcoal-dark': '#1d2738',
-					pearl: '#f7fafc',
-					bronze: '#6C757D',
-					'bronze-light': '#8A929A',
-					'bronze-dark': '#5A6268',
+					'deep-blue': '#1A202C', // New deep blue, replacing charcoal
+					charcoal: '#1A202C', // Was #2d3748, changed to owis.deep-blue
+					'charcoal-light': '#2C3A4F', // Adjusted light version of deep-blue
+					'charcoal-dark': '#101620', // Adjusted dark version of deep-blue
+					pearl: '#F9FAFB', // Was #f7fafc, changed to owis.off-white
+					bronze: '#7c3aed', // Was #6C757D, changed to owis.purple-dark
+					'bronze-light': '#a855f7', // Adjusted light version of purple-dark
+					'bronze-dark': '#6b21a8', // Adjusted dark version of purple-dark (darker purple)
 					mint: '#e6fffa',
 					'mint-light': '#f0fffb',
 					'mint-dark': '#dcfff9',
 					// Dynamic accent colors
-					'rose-gold': '#6C757D', // Was #e8b4a0, changed to owis.bronze (actually using a gray here for neutrality)
+					'rose-gold': '#9333ea', // Was #6C757D, changed to owis.purple
 					'deep-emerald': '#0f5132',
-					'warm-ivory': '#fffef7',
+					'warm-ivory': '#fffef7', // This is a yellow-ish white, might need to be changed depending on strictness
 					'midnight-blue': '#191970',
-					'sunset-orange': '#ff6b35',
+					'sunset-orange': '#ff6b35', // Orange can sometimes be close to yellow/gold
 					teal: '#008080',
 					'teal-light': '#20B2AA',
 					'teal-dark': '#006666',
-					sage: '#87a96b',
-					'sage-light': '#9bb57b',
-					'sage-dark': '#75955b'
+					sage: '#50C878', // Was #87a96b, changed to owis.emerald
+					'sage-light': '#5FD38F', // Was #9bb57b, changed to owis.emerald-light
+					'sage-dark': '#40B060'  // Was #75955b, changed to owis.emerald-dark
 				}
 			},
 			borderRadius: {

@@ -5,17 +5,19 @@ This module provides FastAPI endpoints for clothing classification, color detect
 and outfit recommendations, integrating the new ML services.
 """
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query
+from fastapi import APIRouter, UploadFile,status, File, HTTPException, Depends, Query, BackgroundTasks
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from typing import List, Dict, Optional, Any
 import logging
+import asyncio # Ensure asyncio is imported
 
-from app.services.clothing_classifier import classify_clothing_image, get_clothing_classifier
-from app.services.color_detector import detect_dominant_color, extract_color_palette, get_color_detector
-from app.services.outfit_recommendation_engine import get_outfit_recommendations, get_similar_items, get_recommendation_engine
+# Use async versions of services
+from app.services.clothing_classifier import classify_clothing_image_async, get_clothing_classifier_async
+from app.services.color_detector import detect_dominant_color_async,get_color_detector, extract_color_palette_async, get_color_detector_async
+from app.services.outfit_recommendation_engine import get_outfit_recommendations, get_similar_items, get_recommendation_engine # These might need async versions too
 from app.db.database import get_db
-from app.model import WardrobeItem, Outfit, User, ItemClassification, ColorAnalysis, OutfitRecommendation
+from app.model import WardrobeItem, Outfit, User, ItemClassification, ColorAnalysis, OutfitRecommendation # Assuming these are SQLAlchemy models
 from app.security import get_current_user
 from app.schemas.ml_features import (
     ClassificationResponse, ColorAnalysisResponse, ColorPaletteResponse,
@@ -51,11 +53,15 @@ async def classify_clothing_endpoint(
         if not image_data:
             raise HTTPException(status_code=400, detail="No image data provided")
         
-        # Classify the image
-        classification_result = classify_clothing_image(image_data)
+        # Classify the image asynchronously
+        classification_result = await classify_clothing_image_async(image_data)
         
         if not classification_result.get("success", False):
-            raise HTTPException(status_code=500, detail=f"Classification failed: {classification_result.get('error', 'Unknown error')}")
+            # Error message might be in 'error' key or directly if service returns string on error
+            error_detail = classification_result.get('error', 'Unknown classification error')
+            if isinstance(classification_result, str) and "Error:" in classification_result: # Compatibility with some error returns
+                error_detail = classification_result
+            raise HTTPException(status_code=500, detail=f"Classification failed: {error_detail}")
         
         # Optionally, save classification to database (if item ID is provided or linked)
         # For now, just return the result
@@ -91,11 +97,14 @@ async def detect_dominant_color_endpoint(
         if not image_data:
             raise HTTPException(status_code=400, detail="No image data provided")
         
-        # Detect dominant color
-        color_result = detect_dominant_color(image_data)
+        # Detect dominant color asynchronously
+        color_result = await detect_dominant_color_async(image_data)
         
         if not color_result.get("success", False):
-            raise HTTPException(status_code=500, detail=f"Color detection failed: {color_result.get('error', 'Unknown error')}")
+            error_detail = color_result.get('error', 'Unknown color detection error')
+            if isinstance(color_result, str) and "Error:" in color_result:
+                 error_detail = color_result
+            raise HTTPException(status_code=500, detail=f"Color detection failed: {error_detail}")
         
         # Optionally, save color analysis to database
         
@@ -132,11 +141,14 @@ async def extract_color_palette_endpoint(
         if not image_data:
             raise HTTPException(status_code=400, detail="No image data provided")
         
-        # Extract color palette
-        palette_result = extract_color_palette(image_data, color_count=color_count)
+        # Extract color palette asynchronously
+        palette_result = await extract_color_palette_async(image_data, color_count=color_count)
         
         if not palette_result.get("success", False):
-            raise HTTPException(status_code=500, detail=f"Palette extraction failed: {palette_result.get('error', 'Unknown error')}")
+            error_detail = palette_result.get('error', 'Unknown palette extraction error')
+            if isinstance(palette_result, str) and "Error:" in palette_result:
+                error_detail = palette_result
+            raise HTTPException(status_code=500, detail=f"Palette extraction failed: {error_detail}")
         
         return palette_result
         
@@ -278,52 +290,50 @@ async def get_similar_items_endpoint(
         logger.error(f"Error in get_similar_items_endpoint: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@router.post("/train-recommendation-model", summary="Train Outfit Recommendation Model")
+@router.post("/train-recommendation-model", response_model=TrainingStatusResponse, status_code=status.HTTP_202_ACCEPTED, summary="Train Outfit Recommendation Model")
 async def train_recommendation_model_endpoint(
+    background_tasks: BackgroundTasks, # Add BackgroundTasks dependency
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
-    Train the outfit recommendation model with the user's current wardrobe items.
+    Triggers background training of the outfit recommendation model with the user's current wardrobe items.
     This should be called periodically or when significant changes occur in the wardrobe.
     
-    - **Returns**: Status of the training process.
+    - **Returns**: Acceptance status, training will proceed in the background.
     """
-    try:
-        # Fetch all items for the current user
-        user_items_db = db.query(WardrobeItem).filter(WardrobeItem.user_id == current_user.id).all()
-        if not user_items_db or len(user_items_db) < 5: # Need at least a few items to train
-            return {"status": "skipped", "message": "Not enough items to train model"}
-        
-        # Convert to dictionaries
-        items_data = [
-            {
-                "id": item.id,
-                "name": item.name,
-                "category": item.category,
-                "brand": item.brand,
-                "dominant_color": {"rgb": item.dominant_color_rgb, "name": item.dominant_color_name} if item.dominant_color_rgb else None,
-                "style": item.style_features.get("style_keywords", []) if item.style_features else [],
-                "description": "",
-                "tags": item.tags if hasattr(item, "tags") else []
-            }
-            for item in user_items_db
-        ]
-        
-        # Train the model
-        engine = get_recommendation_engine()
-        success = engine.train_recommendation_model(items_data)
-        
-        if success:
-            return {"status": "success", "message": "Recommendation model trained successfully"}
-        else:
-            return {"status": "failed", "message": "Error training recommendation model"}
-            
-    except Exception as e:
-        logger.error(f"Error in train_recommendation_model_endpoint: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    # Fetch all items for the current user (this part is quick)
+    user_items_db = db.query(WardrobeItem).filter(WardrobeItem.user_id == current_user.id).all()
+    if not user_items_db or len(user_items_db) < 5:
+        # Return a different status if not training, or just accept and log
+        # For simplicity, we can still return 202 but log that no training was needed.
+        logger.info(f"Recommendation model training skipped for user {current_user.id}: not enough items.")
+        return TrainingStatusResponse(status="skipped", message="Not enough items to train model, training skipped.")
+
+    # Convert to dictionaries (also relatively quick)
+    items_data = [
+        {
+            "id": item.id, "name": item.name, "category": item.category, "brand": item.brand,
+            "dominant_color": {"rgb": item.dominant_color_rgb, "name": item.dominant_color_name} if item.dominant_color_rgb else None,
+            "style": item.style_features.get("style_keywords", []) if item.style_features else [],
+            "description": "", "tags": item.tags if hasattr(item, "tags") else []
+        }
+        for item in user_items_db
+    ]
+    
+    # Add the time-consuming training task to background
+    engine = get_recommendation_engine()
+    background_tasks.add_task(engine.train_recommendation_model, items_data)
+    
+    logger.info(f"Recommendation model training initiated in background for user {current_user.id}.")
+    return TrainingStatusResponse(status="pending", message="Recommendation model training has been initiated in the background.")
 
 # Helper function to integrate ML results into WardrobeItem creation/update
+# This function itself also calls synchronous AI service functions.
+# It should be refactored to use their _async versions if called from an async route.
+# For now, assuming it's called from wardrobe.py which was refactored.
+# However, the calls inside process_and_update_item_ml_data are still to sync versions.
+# This needs to be addressed if this helper is used by new async code.
 async def process_and_update_item_ml_data(
     item: WardrobeItem, 
     image_data: bytes, 

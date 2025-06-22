@@ -75,18 +75,43 @@ export const addItem = async (
   itemData: Omit<WardrobeItemData, 'image_url'>,
   imageFile?: File
 ) => {
+  console.log("[apiClient.addItem] Raw itemData to be stringified:", itemData);
+  const itemDataString = JSON.stringify(itemData);
+  console.log("[apiClient.addItem] Stringified itemData:", itemDataString);
+
   const formData = new FormData();
-  formData.append("item", JSON.stringify(itemData)); // ✅ FastAPI expects item as string
+  formData.append("item", itemDataString); // ✅ FastAPI expects item as string
 
   if (imageFile) {
-    formData.append("image", imageFile);
+    formData.append("image", imageFile, imageFile.name);
+    console.log("[apiClient.addItem] Appended image file:", imageFile.name, imageFile.type, imageFile.size);
+  } else {
+    console.log("[apiClient.addItem] No image file provided.");
   }
 
-  // Use apiClient helper — DO NOT set Content-Type, FormData will handle it
-  return await apiClient("/wardrobe/items/", {
-    method: "POST",
-    body: formData,
-  });
+  // To inspect FormData, iterate over entries (won't show file content but will show keys/filenames)
+  // console.log("[apiClient.addItem] FormData entries:");
+  // for (let pair of formData.entries()) {
+  //   console.log(pair[0]+ ', ' + (pair[1] instanceof File ? pair[1].name : pair[1]));
+  // }
+
+  try {
+    // Use apiClient helper — DO NOT set Content-Type, FormData will handle it
+    const response = await apiClient("/wardrobe/items/", {
+      method: "POST",
+      body: formData,
+    });
+    console.log("[apiClient.addItem] Success response:", response);
+    return response;
+  } catch (error: any) {
+    console.error("[apiClient.addItem] Error caught in apiClient.addItem:", error);
+    // Log more details if available, e.g., error.response for axios-like errors
+    if (error.response) {
+      console.error("[apiClient.addItem] Error response data:", error.response.data);
+      console.error("[apiClient.addItem] Error response status:", error.response.status);
+    }
+    throw error; // Re-throw the error to be caught by the caller
+  }
 };
 
 

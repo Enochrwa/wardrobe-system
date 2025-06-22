@@ -8,15 +8,17 @@ import os
 import logging
 from PIL import Image
 import io 
+import asyncio # Added for async operations
 from sqlalchemy.orm import Session
 from ..services.outfit_recommendation_engine import get_recommendation_engine 
 from ..schemas import ml_features as schemas_ml # Corrected import for ml_features schemas
   
 from .. import tables as schemas
 from .. import model as models
-from ..services import ai_embedding
-from ..services.color_detector import get_color_detector
-from ..services.clothing_classifier import get_clothing_classifier
+# Import async versions of services
+from ..services.ai_embedding import get_image_embedding_async, get_image_embedding # Keep sync for now if needed elsewhere
+from ..services.color_detector import get_color_detector_async, detect_dominant_color_async, extract_color_palette_async, get_color_detector # Keep sync
+from ..services.clothing_classifier import get_clothing_classifier_async, classify_clothing_image_async, get_clothing_classifier # Keep sync
 from ..services import user_style_profile_service # Import the new service
 from ..security import get_current_user
 from ..db.database import get_db
@@ -85,41 +87,37 @@ def extract_textual_style_features(name: Optional[str], category: Optional[str],
 
 
 @router.post("/items/", response_model=schemas.WardrobeItem, status_code=status.HTTP_201_CREATED)
-async def create_wardrobe_item(
-    item_str: str = Form(..., alias="item"), # Expect 'item' as a string from FormData
+async def create_wardrobe_item( # Now an async function
+    item_str: str = Form(..., alias="item"),
     image: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
     current_user: schemas.User = Depends(get_current_user)
 ):
     try:
         item_data_dict = json.loads(item_str)
-        item = schemas.WardrobeItemCreate(**item_data_dict)
+        item_model_instance = schemas.WardrobeItemCreate(**item_data_dict) # Renamed to avoid confusion with 'item' variable if image is FileStorage
     except json.JSONDecodeError:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON format for item data.")
-    except Exception as e: # PydanticValidationError will be caught here
-        # You can log e for more details if needed
+    except Exception as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Validation error for item data: {e}")
 
-    item_data = item.model_dump() # Now includes color, notes, and favorite (with default)
+    item_data = item_model_instance.model_dump()
     
-    # Initialize AI-related fields, others come from item_data
     item_data.update({
         'ai_embedding': None, 'ai_dominant_colors': None, 'dominant_color_rgb': None,
         'dominant_color_hex': None, 'dominant_color_name': None, 'color_palette': None,
         'color_properties': None, 'ai_classification': None, 'style_features': None
-        # favorite, color, notes are now part of item_data from WardrobeItemCreate
     })
 
     if image and image.filename:
         if image.content_type not in ALLOWED_CONTENT_TYPES:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid image type. Allowed types: {ALLOWED_CONTENT_TYPES}")
 
-        # Read image bytes once for all services
-        image_bytes_content = await image.read()
-        await image.seek(0) # Reset cursor for saving the file
+        image_bytes_content = await image.read() # await here
+        # No need to seek(0) for image_bytes_content, but good for image.file if reused
 
         if len(image_bytes_content) > MAX_FILE_SIZE_BYTES:
-            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=f"Image too large. Max size: {MAX_FILE_SIZE_BYTES // (1024*1024)}MB")
+            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=f"Image too large.")
 
         unique_id = uuid.uuid4()
         extension = os.path.splitext(image.filename)[1]
@@ -127,63 +125,86 @@ async def create_wardrobe_item(
         file_path = os.path.join(WARDROBE_IMAGES_DIR, filename)
 
         try:
+            # Saving file is I/O bound, can be offloaded, but usually fast for typical web servers
+            # For very large files or slow storage, consider to_thread for open/write
             with open(file_path, "wb") as buffer:
-                shutil.copyfileobj(image.file, buffer)
+                # If image.file is a SpooledTemporaryFile, image.file.read() was already done by await image.read()
+                # We need to write image_bytes_content to the buffer
+                buffer.write(image_bytes_content)
             item_data['image_url'] = f"/{file_path}"
 
-            # AI Processing using the single read image_bytes_content
-            pil_image_for_embedding = Image.open(io.BytesIO(image_bytes_content)) # For embedding service if it needs PIL
-
-            # 1. Embedding
+            # AI Processing - run them concurrently
+            pil_image_for_embedding = None
             try:
-                item_data['ai_embedding'] = ai_embedding.get_image_embedding(pil_image_for_embedding)
-            except Exception as e:
-                logger.error(f"Error generating image embedding: {e}")
+                pil_image_for_embedding = Image.open(io.BytesIO(image_bytes_content))
+            except Exception as img_err:
+                logger.error(f"Failed to open image bytes with PIL: {img_err}")
+                # Decide if this is critical. If embedding is optional, can continue.
 
-            # 2. Color Detection (using ColorDetector)
-            try:
-                color_detector = get_color_detector()
-                dominant_color_info = color_detector.extract_dominant_color(image_bytes_content)
-                palette_info = color_detector.extract_color_palette(image_bytes_content)
+            results = []
+            if pil_image_for_embedding:
+                results = await asyncio.gather(
+                    get_image_embedding_async(pil_image_for_embedding),
+                    detect_dominant_color_async(image_bytes_content),
+                    extract_color_palette_async(image_bytes_content),
+                    classify_clothing_image_async(image_bytes_content),
+                    return_exceptions=True # To handle individual failures
+                )
+            else: # Only run text-based or non-image dependent AI services if PIL failed
+                 results = [None] * 4 # Match structure, assuming embedding, color, palette, classification failed
 
+            # Process results
+            # Embedding
+            if results and not isinstance(results[0], Exception) and results[0] is not None:
+                if isinstance(results[0], list): # Check if it's a list (embedding)
+                    item_data['ai_embedding'] = results[0]
+                elif isinstance(results[0], str) and "Error:" in results[0]: # Handle error string from service
+                    logger.error(f"Embedding failed: {results[0]}")
+            elif results and isinstance(results[0], Exception):
+                 logger.error(f"Error generating image embedding: {results[0]}")
+            
+            # Color Detection
+            if results and len(results) > 1 and not isinstance(results[1], Exception) and results[1] is not None:
+                dominant_color_info = results[1]
                 if dominant_color_info.get("success"):
                     item_data['dominant_color_rgb'] = dominant_color_info["dominant_color"]["rgb"]
                     item_data['dominant_color_hex'] = dominant_color_info["dominant_color"]["hex"]
                     item_data['dominant_color_name'] = dominant_color_info["dominant_color"]["name"]
                     item_data['color_properties'] = dominant_color_info["properties"]
-                
+            elif results and len(results) > 1 and isinstance(results[1], Exception):
+                logger.error(f"Error processing dominant color: {results[1]}")
+
+            # Color Palette
+            if results and len(results) > 2 and not isinstance(results[2], Exception) and results[2] is not None:
+                palette_info = results[2]
                 if palette_info.get("success"):
                     item_data['color_palette'] = palette_info["palette"]
-                    # Populate ai_dominant_colors from the new palette for compatibility or if needed
-                    item_data['ai_dominant_colors'] = [p_color['hex'] for p_color in palette_info["palette"]] if palette_info["palette"] else []
-                else: # Fallback for ai_dominant_colors if full palette extraction fails
-                    item_data['ai_dominant_colors'] = [dominant_color_info["dominant_color"]["hex"]] if dominant_color_info.get("success") else []
-
-
-            except Exception as e:
-                logger.error(f"Error processing colors with ColorDetector: {e}")
-
-            # 3. Clothing Classification
-            try:
-                classifier = get_clothing_classifier()
-                classification_result = classifier.classify_clothing_item(image_bytes_content)
+                    item_data['ai_dominant_colors'] = [p_color['hex'] for p_color in palette_info["palette"]] if palette_info.get("palette") else []
+                elif item_data.get('dominant_color_hex'): # Fallback from dominant color if palette failed
+                     item_data['ai_dominant_colors'] = [item_data['dominant_color_hex']]
+            elif results and len(results) > 2 and isinstance(results[2], Exception):
+                logger.error(f"Error processing color palette: {results[2]}")
+            
+            # Clothing Classification
+            if results and len(results) > 3 and not isinstance(results[3], Exception) and results[3] is not None:
+                classification_result = results[3]
                 if classification_result.get("success"):
                     item_data['ai_classification'] = {
                         "category": classification_result["clothing_type"],
                         "confidence": classification_result["confidence"],
                         "details": classification_result["detailed_predictions"]
                     }
-            except Exception as e:
-                logger.error(f"Error classifying clothing: {e}")
-        
-        except Exception as e:
-            logger.error(f"Error saving image or during AI processing: {e}")
-            item_data['image_url'] = item.image_url # Fallback
-        finally:
-            image.file.close()
+            elif results and len(results) > 3 and isinstance(results[3], Exception):
+                logger.error(f"Error classifying clothing: {results[3]}")
+
+        except Exception as e: # General error during file saving or AI setup
+            logger.error(f"Error saving image or during AI processing setup: {e}")
+            # Fallback for image_url if it was part of input JSON and file processing failed
+            item_data['image_url'] = item_model_instance.image_url 
+        # image.file.close() is handled by FastAPI when UploadFile goes out of scope
             
-    elif item_data.get('image_url'): # Check from the parsed item_data
-        pass # image_url is already in item_data if provided and no new image
+    elif item_data.get('image_url'):
+        pass 
     else:
         item_data['image_url'] = None
 
@@ -200,13 +221,32 @@ async def create_wardrobe_item(
     # Fields like 'color' and 'notes' are now part of item_data if provided in item_str
     # 'favorite' is also explicitly handled and defaults to False if not in item_str
 
-    db_item = models.WardrobeItem(
-        user_id=current_user.id,
-        date_added=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
-        times_worn=0,
-        **item_data # Spread all validated and processed data
-    )
+    # Define the known fields for models.WardrobeItem based on schemas.WardrobeItem and schemas.WardrobeItemCreate
+    # These are fields that are expected to be columns in the WardrobeItem table.
+    known_model_fields = {
+        'name', 'brand', 'category', 'size', 'price', 'material', 'season', 'image_url', 
+        'tags', 'color', 'notes', 'favorite', 'times_worn', 'date_added', 'last_worn', 
+        'updated_at', 'ai_embedding', 'ai_dominant_colors',
+        # Explicitly add fields that are processed and should be saved, assuming they exist in models.WardrobeItem
+        'dominant_color_rgb', 'dominant_color_hex', 'dominant_color_name', 
+        'color_palette', 'color_properties', 'ai_classification', 'style_features',
+        'user_id' # Will be set explicitly
+    }
+
+    # Filter item_data to only include keys that are known model fields
+    filtered_item_data = {k: v for k, v in item_data.items() if k in known_model_fields}
+
+    # Ensure essential server-set fields are present
+    filtered_item_data['user_id'] = current_user.id
+    filtered_item_data['date_added'] = datetime.utcnow()
+    filtered_item_data['updated_at'] = datetime.utcnow()
+    filtered_item_data['times_worn'] = filtered_item_data.get('times_worn', 0) # Should come from item_data if updating, or default for new
+    
+    # If 'tags' is None (it's Optional), ensure it's handled (e.g., set to [] if DB expects non-null JSON/array)
+    # Pydantic model already makes `tags` Optional[List[str]], so if it's None, it will be passed as None.
+    # SQLAlchemy model should handle None for nullable JSON fields.
+
+    db_item = models.WardrobeItem(**filtered_item_data)
     
     db.add(db_item)
     db.commit()
@@ -258,9 +298,18 @@ async def read_wardrobe_item(
     return db_item
 
 @router.put("/items/{item_id}", response_model=schemas.WardrobeItem)
-async def update_wardrobe_item(
+async def update_wardrobe_item( # Already async, good.
     item_id: int,
-    item_update: schemas.WardrobeItemUpdate = Depends(),
+    # item_update_str: str = Form(..., alias="item_update"), # If item_update comes as JSON string in form
+    # For now, assuming item_update is parsed by FastAPI from JSON body part if Content-Type is multipart/form-data
+    # Or, if it's a Pydantic model from a JSON body, it's fine.
+    # The Depends() implies it's trying to get it from query/body based on annotations.
+    # Let's assume item_update: schemas.WardrobeItemUpdate = Body(...) if it were JSON part of multipart
+    # or just item_update: schemas.WardrobeItemUpdate if it's a pure JSON request.
+    # The current Depends() is fine if client sends it appropriately (e.g. as JSON part of FormData, or separate JSON body)
+    # The frontend apiClient.updateItem sends FormData with 'item_update' as JSON string blob.
+    # So, we need to parse it from Form.
+    item_update_str: str = Form(..., alias="item_update"),
     image: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
     current_user: schemas.User = Depends(get_current_user)
@@ -268,21 +317,28 @@ async def update_wardrobe_item(
     db_item = db.query(models.WardrobeItem).filter(models.WardrobeItem.id == item_id, models.WardrobeItem.user_id == current_user.id).first()
     if db_item is None: raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
     
-    update_data = item_update.model_dump(exclude_unset=True)
+    try:
+        item_update_dict = json.loads(item_update_str)
+        item_update_model = schemas.WardrobeItemUpdate(**item_update_dict)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON for item_update.")
+    except Exception as e: # PydanticValidationError
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Validation error for item_update: {e}")
+
+    update_data = item_update_model.model_dump(exclude_unset=True)
     previous_favorite_status = db_item.favorite
     new_favorite_status = update_data.get('favorite', previous_favorite_status)
 
     if image and image.filename:
         if image.content_type not in ALLOWED_CONTENT_TYPES:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid image type. Allowed types: {ALLOWED_CONTENT_TYPES}")
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid image type.")
 
-        image_bytes_content = await image.read()
-        await image.seek(0)
+        image_bytes_content = await image.read() # await
 
         if len(image_bytes_content) > MAX_FILE_SIZE_BYTES:
-            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=f"Image too large. Max size: {MAX_FILE_SIZE_BYTES // (1024*1024)}MB")
+            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=f"Image too large.")
 
-        if db_item.image_url:
+        if db_item.image_url: # Delete old image
             old_image_path_on_disk = db_item.image_url.lstrip("/")
             if os.path.exists(old_image_path_on_disk):
                 try: os.remove(old_image_path_on_disk)
@@ -295,57 +351,70 @@ async def update_wardrobe_item(
 
         try:
             with open(new_file_path_on_disk, "wb") as buffer:
-                shutil.copyfileobj(image.file, buffer)
+                buffer.write(image_bytes_content) # Write new image
             update_data['image_url'] = f"/{new_file_path_on_disk}"
 
-            pil_image_for_embedding = Image.open(io.BytesIO(image_bytes_content))
-
-            try: update_data['ai_embedding'] = ai_embedding.get_image_embedding(pil_image_for_embedding)
-            except Exception as e: logger.error(f"Error generating image embedding for update: {e}")
-
+            pil_image_for_embedding = None
             try:
-                color_detector = get_color_detector()
-                dominant_color_info = color_detector.extract_dominant_color(image_bytes_content)
-                palette_info = color_detector.extract_color_palette(image_bytes_content)
+                pil_image_for_embedding = Image.open(io.BytesIO(image_bytes_content))
+            except Exception as img_err:
+                logger.error(f"Failed to open image bytes with PIL for update: {img_err}")
+
+            ai_results = []
+            if pil_image_for_embedding:
+                ai_results = await asyncio.gather(
+                    get_image_embedding_async(pil_image_for_embedding),
+                    detect_dominant_color_async(image_bytes_content),
+                    extract_color_palette_async(image_bytes_content),
+                    classify_clothing_image_async(image_bytes_content),
+                    return_exceptions=True
+                )
+            else:
+                ai_results = [None] * 4
+
+
+            if ai_results and not isinstance(ai_results[0], Exception) and ai_results[0] is not None:
+                if isinstance(ai_results[0], list): update_data['ai_embedding'] = ai_results[0]
+                elif isinstance(ai_results[0], str) and "Error:" in ai_results[0]: logger.error(f"Update Embedding failed: {ai_results[0]}")
+            elif ai_results and isinstance(ai_results[0], Exception): logger.error(f"Error updating embedding: {ai_results[0]}")
+
+            if ai_results and len(ai_results) > 1 and not isinstance(ai_results[1], Exception) and ai_results[1] is not None:
+                dominant_color_info = ai_results[1]
                 if dominant_color_info.get("success"):
                     update_data['dominant_color_rgb'] = dominant_color_info["dominant_color"]["rgb"]
                     update_data['dominant_color_hex'] = dominant_color_info["dominant_color"]["hex"]
                     update_data['dominant_color_name'] = dominant_color_info["dominant_color"]["name"]
                     update_data['color_properties'] = dominant_color_info["properties"]
+            elif ai_results and len(ai_results) > 1 and isinstance(ai_results[1], Exception): logger.error(f"Error updating dominant color: {ai_results[1]}")
+
+            if ai_results and len(ai_results) > 2 and not isinstance(ai_results[2], Exception) and ai_results[2] is not None:
+                palette_info = ai_results[2]
                 if palette_info.get("success"):
                     update_data['color_palette'] = palette_info["palette"]
-                    update_data['ai_dominant_colors'] = [p_color['hex'] for p_color in palette_info["palette"]] if palette_info["palette"] else []
-                else:
-                    update_data['ai_dominant_colors'] = [dominant_color_info["dominant_color"]["hex"]] if dominant_color_info.get("success") else []
-
-            except Exception as e: logger.error(f"Error processing colors with ColorDetector for update: {e}")
-
-            try:
-                classifier = get_clothing_classifier()
-                classification_result = classifier.classify_clothing_item(image_bytes_content)
+                    update_data['ai_dominant_colors'] = [p['hex'] for p in palette_info["palette"]] if palette_info.get("palette") else []
+                elif update_data.get('dominant_color_hex'): update_data['ai_dominant_colors'] = [update_data['dominant_color_hex']]
+            elif ai_results and len(ai_results) > 2 and isinstance(ai_results[2], Exception): logger.error(f"Error updating color palette: {ai_results[2]}")
+            
+            if ai_results and len(ai_results) > 3 and not isinstance(ai_results[3], Exception) and ai_results[3] is not None:
+                classification_result = ai_results[3]
                 if classification_result.get("success"):
-                    update_data['ai_classification'] = {
-                        "category": classification_result["clothing_type"],
-                        "confidence": classification_result["confidence"],
-                        "details": classification_result["detailed_predictions"]
-                    }
-            except Exception as e: logger.error(f"Error classifying clothing for update: {e}")
+                    update_data['ai_classification'] = {"category": classification_result["clothing_type"], "confidence": classification_result["confidence"], "details": classification_result["detailed_predictions"]}
+            elif ai_results and len(ai_results) > 3 and isinstance(ai_results[3], Exception): logger.error(f"Error updating classification: {ai_results[3]}")
 
         except Exception as e: logger.error(f"Error saving new image or during AI processing for update: {e}")
-        finally: image.file.close()
+        # image.file.close() is handled by FastAPI
 
-    elif 'image_url' in update_data and update_data['image_url'] is None:
+    elif 'image_url' in update_data and update_data['image_url'] is None: # Explicitly removing image
         if db_item.image_url:
             old_image_path_on_disk = db_item.image_url.lstrip("/")
             if os.path.exists(old_image_path_on_disk):
                 try: os.remove(old_image_path_on_disk)
                 except Exception as e: logger.error(f"Error deleting image {old_image_path_on_disk}: {e}")
         
-        update_data.update({
+        update_data.update({ # Clear AI image features
             'ai_embedding': None, 'ai_dominant_colors': None, 'dominant_color_rgb': None,
             'dominant_color_hex': None, 'dominant_color_name': None, 'color_palette': None,
             'color_properties': None, 'ai_classification': None
-            # style_features might be kept if purely text-based, or cleared if image-dependent
         })
 
 

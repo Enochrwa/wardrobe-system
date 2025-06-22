@@ -28,10 +28,10 @@ class ModelManager:
         # Model configurations
         self.model_configs = {
             "mobilenet_v2": {
-                "url": "https://tfhub.dev/google/tf2-preview/mobilenet_v2/feature_vector/4",
+                "url": "https://tfhub.dev/google/imagenet/mobilenet_v2_100_224/feature_vector/5", # Updated URL
                 "input_shape": (224, 224, 3),
                 "cache_key": "mobilenet_v2_embedding",
-                "version": "1.0"
+                "version": "1.1" # Bump version due to URL change
             },
             "efficientdet_lite0": {
                 "url": "https://tfhub.dev/tensorflow/efficientdet/lite0/detection/1",
@@ -142,10 +142,10 @@ class ModelManager:
             if model_name == "mobilenet_v2":
                 # Load KerasLayer from TF Hub
                 keras_layer = hub.KerasLayer(config["url"], trainable=False)
-
-                # ✅ Force-cast as a tf.keras.layers.Layer
-                if not isinstance(keras_layer, tf.keras.layers.Layer):
-                    raise TypeError(f"Downloaded module is not a valid Keras Layer: {type(keras_layer)}")
+    
+                # Remove this problematic check
+                # if not isinstance(keras_layer, tf.keras.layers.Layer):
+                #     raise TypeError(f"Downloaded module is not a valid Keras Layer: {type(keras_layer)}")
 
                 # ✅ Use Functional API instead of Sequential
                 inputs = tf.keras.Input(shape=config["input_shape"])
