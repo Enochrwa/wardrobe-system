@@ -4,6 +4,8 @@
 .env.example
 .env.production
 venv/
+/app/ml/
+/app/ml/
 backend/.env
 *.py[cod]
 __pycache__/
